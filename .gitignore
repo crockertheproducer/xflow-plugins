@@ -1,0 +1,8 @@
+# Configuración con contraseñas: nunca se sube
+web/api/config.php
+# Imágenes subidas desde el panel en el servidor
+web/api/uploads/*
+!web/api/uploads/.htaccess
+!web/api/uploads/.gitkeep
+*.sqlite
+.DS_Store

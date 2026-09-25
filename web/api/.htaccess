@@ -1,0 +1,5 @@
+# Solo index.php e install.php son accesibles desde el navegador.
+<FilesMatch "^(config\.php|config\.sample\.php|bootstrap\.php)$">
+    Require all denied
+</FilesMatch>
+Options -Indexes
