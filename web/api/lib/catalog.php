@@ -29,6 +29,7 @@ function product_from_row(array $r): array
         'featured' => (bool)$r['featured'],
         'is_new' => (bool)$r['is_new'],
         'status' => $r['status'],
+        'sync_center' => (bool)($r['sync_center'] ?? 1),
         'sort_order' => (int)$r['sort_order'],
         'created_at' => iso($r['created_at'] ?? null),
         'updated_at' => iso($r['updated_at'] ?? null),
@@ -221,7 +222,7 @@ function product_public(array $p, ?array $sale = null, ?array $all = null): arra
         return $plan + ['final_price' => $pr['cents'] / 100, 'final_compare' => $pr['compare_cents'] !== null ? $pr['compare_cents'] / 100 : null];
     }, $p['plans']);
     $out['discount_active'] = effective_discount($p, $sale);
-    unset($out['center_id']);
+    unset($out['center_id'], $out['sync_center']);
     if ($p['type'] === 'bundle') {
         $items = $p['bundle_all']
             ? array_values(array_filter($all ?? all_products(), fn($x) => $x['type'] === 'plugin' && $x['status'] === 'published'))

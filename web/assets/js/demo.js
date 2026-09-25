@@ -23,7 +23,7 @@
 
   function seed() {
     const t = now();
-    const base = { specs: SPECS, gallery: [], video_url: '', discount_percent: 0, discount_ends_at: null, bundle_items: [], bundle_all: false, status: 'published', created_at: t, updated_at: t };
+    const base = { specs: SPECS, gallery: [], video_url: '', discount_percent: 0, discount_ends_at: null, bundle_items: [], bundle_all: false, status: 'published', sync_center: true, created_at: t, updated_at: t };
     const products = [
       Object.assign({}, base, { id: 1, type: 'plugin', slug: 'x-flow-channelstrip', name: 'X-FLOW CHANNELSTRIP', category: 'Mezcla', tagline: 'Cuatro módulos de consola clásica en un solo rack.', description: 'Preamp de color, EQ musical de tres bandas, de-esser natural y limitador FET con VU real. Todo lo que necesita una pista para sonar terminada, en el orden correcto y sin abrir cinco plugins distintos.\n\nPensado para voces, baterías y buses: carga el preset, ajusta el nivel de entrada y deja que el rack haga el trabajo pesado.', features: ['Preamp modular con saturación y mezcla paralela', 'EQ de 3 bandas con filtros de estilo clásico', 'De-esser por bandas con modo audición', 'Limitador FET con ratios 4 / 8 / 12 / 20 y VU animado', 'Bypass independiente en cada módulo'], image: 'assets/img/plugins/channelstrip.png', center_id: 'channelstrip', plans: plans(49.99, 5.99, 44.99), badge: 'MÁS VENDIDO', featured: true, is_new: false, sort_order: 1 }),
       Object.assign({}, base, { id: 2, type: 'plugin', slug: 'x-flow-analyzer', name: 'X-FLOW ANALYZER', category: 'Utilidad', tagline: 'Mira tu mezcla: espectro, loudness y fase en tiempo real.', description: 'Analizador de 64 bandas con curva suavizada, medición LUFS integrada/short-term, true peak y correlación estéreo. Cambia entre vistas Stereo / Mid / Side y compara cómo se traduce tu mezcla en teléfono, carro o discoteca.', features: ['Espectro de 16 a 64 bandas con rango ajustable', 'LUFS integrado, short-term y true peak', 'Medidor de correlación de fase', 'Vistas Stereo, Mid y Side con EQ M/S', 'Simulación de escucha: teléfono, carro y discoteca'], image: 'assets/img/plugins/analyzer.png', center_id: 'xflowanalizer', plans: plans(19.99, 2.99), badge: 'NUEVO', featured: true, is_new: true, sort_order: 2 }),
@@ -217,20 +217,145 @@
   function adminLog(action, detail) { DB.log.unshift({ admin: DB.session.admin ? DB.session.admin.email : '', action, detail: typeof detail === 'string' ? detail : JSON.stringify(detail || ''), created_at: now() }); DB.log = DB.log.slice(0, 200); }
   function mask(v) { return v ? '••••••••' + String(v).slice(-4) : ''; }
 
+  /* ------------------------------------------------ lectura en vivo de X-Flow Center (solo lectura) */
+  const LIVE_KEY = 'xf_demo_live_v1';
+  function liveState() { return XF.store.get(LIVE_KEY, { at: 0, ok: false, found: 0, error: '' }); }
+  function normName(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+  function absCenter(url) {
+    url = String(url || '').trim();
+    if (!url || /^(https?:)?\/\//i.test(url) || url.startsWith('data:')) return url;
+    const m = String(XF.cfg.centerApi || '').match(/^(https?:\/\/[^/]+)/i);
+    return m ? m[1] + '/' + url.replace(/^\//, '') : url;
+  }
+  async function fetchJson(url, ms) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), ms || 7000);
+    try {
+      const r = await fetch(url, { signal: ctl.signal, credentials: 'omit', cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } finally { clearTimeout(t); }
+  }
+  function applyCenterCatalog(list) {
+    let created = 0, updated = 0;
+    list.forEach((raw) => {
+      if (!raw || raw.id === undefined || raw.id === '') return;
+      const cp = { id: String(raw.id), name: String(raw.nombre || raw.name || raw.id).trim(), price: Number(raw.precio_perm ?? raw.precio ?? raw.price) || 0, sub: Number(raw.precio_sub) || 0, desc: String(raw.descripcion || raw.desc || ''), image: absCenter(raw.imagen_url || raw.imagen || ''), version: String(raw.version || '') };
+      let p = DB.products.find((x) => x.type === 'plugin' && String(x.center_id).toLowerCase() === cp.id.toLowerCase()) || DB.products.find((x) => x.type === 'plugin' && normName(x.name) === normName(cp.name));
+      const sub = cp.sub || (cp.price ? Math.round(cp.price * 25) / 100 : 0);
+      const basePlans = (cur) => {
+        const keep = (cur || []).filter((pl) => pl.id !== 'lifetime' && pl.id !== 'monthly');
+        const out = [];
+        if (cp.price) out.push({ id: 'lifetime', label: 'Permanente', type: 'lifetime', days: 0, price: cp.price, compare_at: null, tier: '' });
+        if (sub) out.push({ id: 'monthly', label: 'Mensual', type: 'days', days: 30, price: sub, compare_at: null, tier: '' });
+        return out.concat(keep);
+      };
+      if (p) {
+        if (p.sync_center === false) return;
+        p.center_id = cp.id; p.name = cp.name || p.name;
+        if (cp.price) p.plans = basePlans(p.plans);
+        if (cp.image && !p.image) p.image = cp.image;
+        if (cp.desc.length >= 15 && !String(p.description || '').trim()) p.description = cp.desc;
+        if (cp.version) p.specs = Object.assign({}, p.specs, { version: cp.version });
+        updated++;
+        return;
+      }
+      if (!cp.price) return;
+      DB.products.push({ id: DB.nextId.product++, type: 'plugin', slug: slugify(cp.name), name: cp.name, tagline: cp.desc.split(/(?<=[.!?])\s/)[0].slice(0, 140), description: cp.desc, features: [], specs: Object.assign({}, SPECS, { version: cp.version || '1.0' }), image: cp.image, gallery: [], video_url: '', category: '', center_id: cp.id, plans: basePlans([]), discount_percent: 0, discount_ends_at: null, badge: '', bundle_items: [], bundle_all: false, featured: false, is_new: false, status: 'published', sync_center: true, sort_order: 20, created_at: now(), updated_at: now() });
+      created++;
+    });
+    save();
+    return { created, updated };
+  }
+  /** Intenta leer tus plugins reales (obtener_plugins). Se repite como mucho cada 10 minutos. */
+  async function liveSync(force) {
+    const st = liveState();
+    if (!force && st.at && Date.now() - st.at < 600000) return st;
+    const next = { at: Date.now(), ok: false, found: 0, created: 0, updated: 0, error: '' };
+    try {
+      let list = await fetchJson(XF.cfg.centerApi + '?accion=obtener_plugins');
+      if (list && list.data) list = list.data;
+      if (!Array.isArray(list)) throw new Error('respuesta no válida');
+      Object.assign(next, { ok: true, found: list.length }, applyCenterCatalog(list));
+    } catch (e) {
+      next.error = 'Tu servidor no permite leerlo desde GitHub Pages (CORS) o no respondió. Se muestran datos de ejemplo.';
+    }
+    XF.store.set(LIVE_KEY, next);
+    return next;
+  }
+  async function liveLogin(email, password) {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 7000);
+      const r = await fetch(XF.cfg.centerLogin + '?email=' + encodeURIComponent(email) + '&password=' + encodeURIComponent(password), { signal: ctl.signal, credentials: 'omit', cache: 'no-store' });
+      clearTimeout(t);
+      const txt = await r.text();
+      if (txt.includes('ACCESO_CONCEDIDO')) { const parts = txt.trim().split('|'); return { status: 'ok', aka: parts[2] || '', photo: absCenter(parts[4] || '') }; }
+      return { status: 'denied' };
+    } catch (e) { return { status: 'unreachable' }; }
+  }
+  async function liveLicenses(email) {
+    try {
+      const list = await fetchJson(XF.cfg.centerApi + '?accion=obtener_licencias_usuario&email=' + encodeURIComponent(email));
+      if (!Array.isArray(list)) return [];
+      return list.map((l) => {
+        const cid = String(l.id_plugin || l.plugin || '');
+        const est = String(l.estado || '').toLowerCase();
+        const p = DB.products.find((x) => String(x.center_id).toLowerCase() === cid.toLowerCase());
+        const life = ['lifetime', 'permanente'].includes(est) || String(l.dias || '').toUpperCase() === 'PERMANENTE';
+        return { id: 0, email, product_id: p ? p.id : 0, product_name: p ? p.name : (l.nombre || cid), tier: '', lifetime: life, expires_at: null, source: 'center', status: ['bloqueado', 'revocado'].includes(est) ? 'revoked' : 'active', center_synced: true, center_message: 'Licencia existente en X-Flow Center.' };
+      }).filter((l) => l.product_name);
+    } catch (e) { return []; }
+  }
+  async function mergedLicenses(email) {
+    const mine = DB.licenses.filter((l) => l.email === email).map(licensePublic);
+    const have = new Set(mine.map((l) => String(l.center_id || '').toLowerCase()));
+    const live = DB.session.customer && DB.session.customer.live ? await liveLicenses(email) : [];
+    live.forEach((l) => { const p = DB.products.find((x) => x.id === l.product_id); const k = p ? String(p.center_id).toLowerCase() : l.product_name; if (!have.has(k)) { have.add(k); mine.push(l); } });
+    return mine;
+  }
+
   const H = {
-    bootstrap() {
+    async bootstrap() {
+      await liveSync(false);
+      const c = DB.session.customer;
+      const owned = c ? (await mergedLicenses(c.email)).filter((l) => l.status === 'active' && l.product_id).map((l) => ({ product_id: l.product_id, lifetime: l.lifetime, expires_at: l.expires_at })) : [];
+      const out = H._bootstrap();
+      out.owned = owned;
+      out.settings.password_reset = true;
+      out.live = liveState();
+      return out;
+    },
+    _bootstrap() {
       const pub = DB.products.filter((p) => ['published', 'coming_soon'].includes(p.status)).sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
       return { settings: { site: DB.settings.site, sale: saleLive(DB.settings.sale) ? DB.settings.sale : { active: false }, payment_methods: publicMethods(), currency: DB.settings.site.currency }, products: pub.map(productPublic), customer: DB.session.customer, csrf: 'demo', server_time: now(), demo: true };
     },
     quote(d) { return { quote: quote(d.items || [], d.coupon || '') }; },
-    login(d) {
-      if (!validEmail(d.email) || String(d.password || '').length < 4) throw err('bad_credentials', 'Correo o contraseña incorrectos (en demo: cualquier correo y 4+ caracteres).');
-      DB.session.customer = { email: d.email.toLowerCase(), aka: d.email.split('@')[0].toUpperCase(), photo: '' }; save();
-      return { customer: DB.session.customer, csrf: 'demo' };
+    async login(d) {
+      if (!validEmail(d.email) || String(d.password || '').length < 4) throw err('bad_credentials', 'Correo o contraseña incorrectos.');
+      const email = d.email.toLowerCase();
+      const live = await liveLogin(email, d.password);
+      if (live.status === 'denied') throw err('bad_credentials', 'Correo o contraseña incorrectos (validado con tu X-Flow Center).');
+      DB.session.customer = { email, aka: live.status === 'ok' ? (live.aka || email.split('@')[0]) : email.split('@')[0].toUpperCase(), photo: live.photo || '', live: live.status === 'ok' };
+      save();
+      return { customer: DB.session.customer, csrf: 'demo', live: live.status };
     },
     logout() { DB.session.customer = null; save(); return {}; },
     me() { return { customer: DB.session.customer, csrf: 'demo' }; },
-    my_licenses() { const c = DB.session.customer; if (!c) throw err('unauthorized', 'Inicia sesión.'); return { licenses: DB.licenses.filter((l) => l.email === c.email).map(licensePublic) }; },
+    async my_licenses() { const c = DB.session.customer; if (!c) throw err('unauthorized', 'Inicia sesión.'); return { licenses: await mergedLicenses(c.email) }; },
+    password_forgot(d) {
+      if (!validEmail(d.email)) throw err('invalid_email', 'Correo inválido.');
+      return { message: 'Si ese correo tiene una cuenta de X-Flow Center, te enviamos un enlace para crear una nueva contraseña. (Laboratorio: no se envían correos; en tu servidor sí.)' };
+    },
+    password_reset(d) {
+      if (!/^[a-f0-9]{64}$/.test(String(d.token || ''))) throw err('token_invalid', 'El enlace no es válido o ya caducó. Pide uno nuevo.');
+      return { message: 'Laboratorio: aquí se guardaría tu nueva contraseña en X-Flow Center.' };
+    },
+    password_change(d) {
+      if (!DB.session.customer) throw err('unauthorized', 'Inicia sesión.');
+      if (String(d.current || '').length < 4) throw err('bad_credentials', 'La contraseña actual no es correcta.');
+      return { message: 'Laboratorio: la contraseña se cambiaría en X-Flow Center.' };
+    },
     my_orders() { const c = DB.session.customer; if (!c) throw err('unauthorized', 'Inicia sesión.'); return { orders: DB.orders.filter((o) => o.email === c.email || o.recipient_email === c.email).slice().reverse().map((o) => Object.assign(orderPublic(o, false), { token: o.email === c.email ? o.access_token : null })) }; },
     checkout_start(d) {
       if (!validEmail(d.email)) throw err('invalid_email', 'Escribe un correo electrónico válido.');
@@ -298,7 +423,7 @@
       if (type === 'plugin' && !String(p.center_id || '').trim()) throw err('center_id', 'Indica el ID del plugin en X-Flow Center (para activar la licencia).');
       let slug = slugify(p.slug || p.name);
       if (DB.products.some((x) => x.slug === slug && x.id !== Number(p.id))) slug += '-' + rid(4).toLowerCase();
-      const data = { type, slug, name: String(p.name).trim().slice(0, 160), tagline: String(p.tagline || ''), description: String(p.description || ''), features: (p.features || []).map((f) => String(f).trim()).filter(Boolean), specs: p.specs || {}, image: String(p.image || ''), gallery: (p.gallery || []).filter(Boolean), video_url: String(p.video_url || ''), category: String(p.category || ''), center_id: String(p.center_id || ''), plans: planList, discount_percent: Math.max(0, Math.min(100, Number(p.discount_percent) || 0)), discount_ends_at: p.discount_ends_at ? new Date(p.discount_ends_at).toISOString() : null, badge: String(p.badge || '').toUpperCase().slice(0, 40), bundle_items: [...new Set((p.bundle_items || []).map(Number))], bundle_all: !!p.bundle_all, featured: !!p.featured, is_new: !!p.is_new, status: ['published', 'draft', 'coming_soon', 'hidden'].includes(p.status) ? p.status : 'published', sort_order: Number(p.sort_order) || 0, updated_at: now() };
+      const data = { type, slug, name: String(p.name).trim().slice(0, 160), tagline: String(p.tagline || ''), description: String(p.description || ''), features: (p.features || []).map((f) => String(f).trim()).filter(Boolean), specs: p.specs || {}, image: String(p.image || ''), gallery: (p.gallery || []).filter(Boolean), video_url: String(p.video_url || ''), category: String(p.category || ''), center_id: String(p.center_id || ''), plans: planList, discount_percent: Math.max(0, Math.min(100, Number(p.discount_percent) || 0)), discount_ends_at: p.discount_ends_at ? new Date(p.discount_ends_at).toISOString() : null, badge: String(p.badge || '').toUpperCase().slice(0, 40), bundle_items: [...new Set((p.bundle_items || []).map(Number))], bundle_all: !!p.bundle_all, featured: !!p.featured, is_new: !!p.is_new, sync_center: p.sync_center !== false, status: ['published', 'draft', 'coming_soon', 'hidden'].includes(p.status) ? p.status : 'published', sort_order: Number(p.sort_order) || 0, updated_at: now() };
       let prod = productById(p.id);
       if (prod) Object.assign(prod, data);
       else { prod = Object.assign({ id: DB.nextId.product++, created_at: now() }, data); DB.products.push(prod); }
@@ -442,7 +567,44 @@
     admin_subscribers() { requireAdmin(); return { subscribers: DB.subscribers }; },
     admin_log() { requireAdmin(); return { log: DB.log }; },
     admin_upload() { throw err('upload', 'En el laboratorio no se suben archivos: pega la URL de la imagen.'); },
-    demo_reset() { DB = seed(); save(); return {}; },
+    async admin_center_sync() {
+      requireAdmin();
+      const r = await liveSync(true);
+      return { result: { at: Math.floor(r.at / 1000), source: 'api', found: r.found, created: r.created || 0, updated: r.updated || 0, error: r.ok ? '' : r.error } };
+    },
+    admin_catalog_status() {
+      requireAdmin();
+      const r = liveState();
+      return { sync: r.at ? { at: Math.floor(r.at / 1000), source: 'api', found: r.found, created: r.created || 0, updated: r.updated || 0, error: r.ok ? '' : r.error } : null, legacy: null };
+    },
+    async admin_import_legacy() {
+      requireAdmin();
+      try {
+        const cloud = await fetchJson(XF.cfg.centerApi + '?accion=leer_configuracion');
+        const conf = cloud && (cloud.plugins || cloud.packs) ? cloud : cloud && cloud.data ? cloud.data : cloud && cloud.config_data ? (typeof cloud.config_data === 'string' ? JSON.parse(cloud.config_data) : cloud.config_data) : cloud;
+        let upd = 0, packs = 0;
+        (conf.plugins || []).forEach((lp) => {
+          const p = DB.products.find((x) => x.type === 'plugin' && String(x.center_id).toLowerCase() === String(lp.id).toLowerCase());
+          if (!p) return;
+          if (Number(lp.discount) > 0 && !p.discount_percent) p.discount_percent = Math.min(90, Math.round(lp.discount));
+          if (lp.isNew) p.is_new = true;
+          if (lp.etiqueta_oferta && !p.badge) p.badge = String(lp.etiqueta_oferta).toUpperCase();
+          upd++;
+        });
+        (conf.packs || []).forEach((pk) => {
+          const items = (pk.includes || []).map((id) => DB.products.find((x) => x.type === 'plugin' && String(x.center_id).toLowerCase() === String(id).toLowerCase())).filter(Boolean).map((x) => x.id);
+          if (!items.length || !Number(pk.price) || DB.products.some((x) => x.slug === slugify(pk.name))) return;
+          DB.products.push({ id: DB.nextId.product++, type: 'bundle', slug: slugify(pk.name), name: String(pk.name).toUpperCase(), tagline: String(pk.desc || '').slice(0, 140), description: String(pk.desc || ''), features: [], specs: {}, image: absCenter(pk.imagen_url || ''), gallery: [], video_url: '', category: 'Pack', center_id: '', plans: plans(Number(pk.price), null), discount_percent: Math.round(Number(pk.discount) || 0), discount_ends_at: null, badge: 'PACK', bundle_items: items, bundle_all: false, featured: false, is_new: !!pk.isNew, status: 'published', sync_center: false, sort_order: 5, created_at: now(), updated_at: now() });
+          packs++;
+        });
+        save();
+        return { result: { plugins_updated: upd, packs_created: packs, reviews: 0 } };
+      } catch (e) {
+        throw err('legacy', 'No se pudo leer tu web anterior desde GitHub Pages (tu servidor no permite CORS). En tu hosting sí funciona.');
+      }
+    },
+    admin_users_test() { requireAdmin(); return { result: { ok: true, message: 'Laboratorio: en tu servidor aquí se comprueba la tabla de usuarios de tu base de datos.' } }; },
+    demo_reset() { DB = seed(); save(); XF.store.del(LIVE_KEY); return {}; },
   };
 
   XF.demoBackend = {
@@ -451,6 +613,6 @@
       if (!fn) throw err('unknown_action', 'Acción desconocida: ' + action);
       return fn(data || {}, query || {});
     },
-    reset() { DB = seed(); save(); },
+    reset() { DB = seed(); save(); XF.store.del(LIVE_KEY); },
   };
 })();

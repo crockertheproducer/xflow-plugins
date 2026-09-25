@@ -34,6 +34,9 @@ function json_out(array $payload, int $status = 200): void
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: no-referrer');
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
@@ -199,8 +202,23 @@ function http_request(string $method, string $url, array $headers = [], ?string 
     return [$status, (string)$resp, is_array($json) ? $json : null];
 }
 
+/** Cabeceras para las llamadas a tu servidor del Center (algunos hostings bloquean peticiones sin User-Agent). */
+function xf_http_headers(array $extra = []): array
+{
+    return array_merge([
+        'User-Agent: Mozilla/5.0 (compatible; XFlowStore/1.0; +' . public_url() . ')',
+        'Accept: application/json, text/plain, */*',
+    ], $extra);
+}
+
 function send_mail(string $to, string $subject, string $html): bool
 {
+    // Solo para pruebas: guarda los correos en un archivo en vez de enviarlos.
+    $log = (string)cfg('mail_log', '');
+    if ($log !== '') {
+        @file_put_contents($log, json_encode(['to' => $to, 'subject' => $subject, 'html' => $html, 'at' => gmdate('c')], JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND | LOCK_EX);
+        return true;
+    }
     if (!cfg('send_emails', true) || !function_exists('mail')) return false;
     $from = (string)cfg('mail_from', 'X-FLOW <no-reply@localhost>');
     $headers = [

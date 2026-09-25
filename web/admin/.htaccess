@@ -1,0 +1,6 @@
+# El panel nunca se muestra dentro de otra web ni aparece en buscadores.
+<IfModule mod_headers.c>
+    Header always set X-Frame-Options "DENY"
+    Header always set X-Robots-Tag "noindex, nofollow"
+    Header always set Cache-Control "no-store"
+</IfModule>

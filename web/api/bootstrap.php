@@ -19,5 +19,8 @@ require __DIR__ . '/lib/settings.php';
 require __DIR__ . '/lib/auth.php';
 require __DIR__ . '/lib/catalog.php';
 require __DIR__ . '/lib/center.php';
+require __DIR__ . '/lib/center_catalog.php';
+require __DIR__ . '/lib/center_users.php';
+require __DIR__ . '/lib/password.php';
 require __DIR__ . '/lib/orders.php';
 require __DIR__ . '/lib/payments.php';

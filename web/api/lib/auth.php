@@ -65,26 +65,68 @@ function rate_limit(string $key, int $max, int $windowSeconds): void
 /**
  * Valida usuario y clave contra el login actual de X-Flow Center (login.php).
  * Respuesta esperada: "ACCESO_CONCEDIDO|rol|aka|...|foto_url".
+ * Devuelve ['status' => ok|denied|unreachable, 'user' => ?array]
  */
-function legacy_login(string $email, string $password): ?array
+function legacy_login_detailed(string $email, string $password): array
 {
     $url = (string)cfg('legacy_login_url', '');
-    if ($url === '') return null;
+    if ($url === '') return ['status' => 'unreachable', 'user' => null];
     $sep = str_contains($url, '?') ? '&' : '?';
-    // login.php acepta GET y POST; enviamos por POST para que la clave no quede en logs.
-    [$status, $body] = http_request('POST', $url, ['Content-Type: application/x-www-form-urlencoded'], http_build_query(['email' => $email, 'password' => $password]), 15);
-    if ($status === 0 || !str_contains((string)$body, 'ACCESO_CONCEDIDO')) {
-        // compatibilidad: algunos login.php solo leen $_GET
-        [$status, $body] = http_request('GET', $url . $sep . http_build_query(['email' => $email, 'password' => $password]), [], null, 15);
+    $params = http_build_query(['email' => $email, 'password' => $password]);
+    // POST primero (la clave no queda en los logs del servidor); si login.php solo lee $_GET, se repite por GET.
+    [$status, $body] = http_request('POST', $url, xf_http_headers(['Content-Type: application/x-www-form-urlencoded']), $params, 15);
+    if (!str_contains((string)$body, 'ACCESO_CONCEDIDO')) {
+        [$status2, $body2] = http_request('GET', $url . $sep . $params, xf_http_headers(), null, 15);
+        if ($status2 !== 0) { $status = $status2; $body = $body2; }
     }
-    if (!str_contains((string)$body, 'ACCESO_CONCEDIDO')) return null;
-    $parts = explode('|', trim((string)$body));
-    return [
-        'email' => $email,
-        'rol'   => $parts[1] ?? '',
-        'aka'   => $parts[2] ?? '',
-        'photo' => $parts[4] ?? '',
-    ];
+    if (str_contains((string)$body, 'ACCESO_CONCEDIDO')) {
+        $parts = explode('|', trim((string)$body));
+        return ['status' => 'ok', 'user' => [
+            'email' => mb_strtolower($email),
+            'rol' => $parts[1] ?? '',
+            'aka' => $parts[2] ?? '',
+            'photo' => isset($parts[4]) ? center_abs_url($parts[4]) : '',
+        ]];
+    }
+    if ($status >= 200 && $status < 500 && $status !== 0) return ['status' => 'denied', 'user' => null];
+    return ['status' => 'unreachable', 'user' => null];
+}
+
+function legacy_login(string $email, string $password): ?array
+{
+    $r = legacy_login_detailed($email, $password);
+    return $r['status'] === 'ok' ? $r['user'] : null;
+}
+
+/** Reglas de contraseña nueva: 8+ caracteres, letras y números, distinta del correo y no común. */
+function password_problem(string $pw, string $email = ''): ?string
+{
+    if (mb_strlen($pw) < 8) return 'La contraseña debe tener al menos 8 caracteres.';
+    if (mb_strlen($pw) > 128) return 'La contraseña es demasiado larga.';
+    if (!preg_match('/[A-Za-z]/', $pw) || !preg_match('/\d/', $pw)) return 'Usa letras y números.';
+    $low = mb_strtolower($pw);
+    $local = mb_strtolower(strstr($email, '@', true) ?: '');
+    if ($local !== '' && mb_strlen($local) >= 4 && str_contains($low, $local)) return 'La contraseña no puede contener tu correo.';
+    $common = ['12345678', '123456789', 'password1', 'contraseña1', 'qwerty123', 'abc12345', 'xflow123', 'xflow2026', 'password123', '11111111a', 'admin123'];
+    if (in_array($low, $common, true)) return 'Esa contraseña es demasiado común.';
+    return null;
+}
+
+/** Caducidad de sesiones: cliente 14 días sin uso, admin 2 h sin uso y 12 h como máximo. */
+function enforce_session_timeouts(): void
+{
+    $now = time();
+    if (!empty($_SESSION['customer'])) {
+        $last = (int)($_SESSION['customer_seen'] ?? $now);
+        if ($now - $last > 14 * 86400) unset($_SESSION['customer']);
+        else $_SESSION['customer_seen'] = $now;
+    }
+    if (!empty($_SESSION['admin'])) {
+        $last = (int)($_SESSION['admin_seen'] ?? $now);
+        $since = (int)($_SESSION['admin']['since'] ?? $now);
+        if ($now - $last > 2 * 3600 || $now - $since > 12 * 3600) unset($_SESSION['admin']);
+        else $_SESSION['admin_seen'] = $now;
+    }
 }
 
 function current_customer(): ?array

@@ -72,6 +72,33 @@ function settings_defaults(): array
                 'col_created' => '',
             ],
             'http' => ['url' => '', 'secret' => ''],
+            // Catálogo: de dónde se leen los plugins que ya tienes subidos en X-Flow Center.
+            'catalog' => [
+                'source' => 'auto', // auto (BD y si no la API) | db | api | off
+                'table' => 'plugins',
+                'col_id' => 'id',
+                'col_name' => 'nombre',
+                'col_price' => 'precio_perm',
+                'col_price_sub' => 'precio_sub',
+                'col_desc' => 'descripcion',
+                'col_image' => 'imagen_url',
+                'col_version' => 'version',
+                'col_active' => '',
+                'auto_publish' => true,
+                'sub_days' => 30,
+                'remote_plans_url' => 'https://remote.xflowbeats.online/api/planes',
+            ],
+            // Cuentas: dónde viven los usuarios de X-Flow Center (login y recuperar contraseña).
+            'users' => [
+                'source' => 'auto', // auto (login.php y si no la BD) | db | api
+                'table' => 'usuarios',
+                'col_email' => 'email',
+                'col_password' => 'password',
+                'col_aka' => 'aka',
+                'col_role' => 'rol',
+                'col_photo' => 'foto_url',
+                'password_format' => 'auto', // auto | bcrypt | md5 | sha1 | sha256 | plain
+            ],
         ],
     ];
 }

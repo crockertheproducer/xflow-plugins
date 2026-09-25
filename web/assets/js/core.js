@@ -2,7 +2,13 @@
 (function () {
   'use strict';
 
-  const CFG = Object.assign({ apiBase: 'api/index.php', demo: 'auto' }, window.XFLOW_CONFIG || {});
+  const CFG = Object.assign({
+    apiBase: 'api/index.php',
+    demo: 'auto',
+    // Laboratorio: de dónde leer en vivo tus plugins, login y licencias reales (si tu servidor lo permite por CORS).
+    centerApi: 'https://xflowbeats.online/soporte_api.php',
+    centerLogin: 'https://xflowbeats.online/login.php',
+  }, window.XFLOW_CONFIG || {});
   const ROOT = window.XF_ROOT || '';
 
   function detectDemo() {
@@ -25,7 +31,7 @@
       if (!XF.demoBackend) throw new Error('Modo demo no disponible');
       await new Promise((r) => setTimeout(r, 120));
       try {
-        const res = XF.demoBackend.handle(action, data || null, opts.query || {});
+        const res = await XF.demoBackend.handle(action, data || null, opts.query || {});
         return JSON.parse(JSON.stringify(Object.assign({ ok: true }, res)));
       } catch (e) {
         const err = new Error(e.message || 'Error');

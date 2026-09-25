@@ -27,6 +27,7 @@ try {
     }
 
     start_session();
+    enforce_session_timeouts();
     $in = input();
     $isPost = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST';
 
@@ -34,6 +35,9 @@ try {
     if (!isset($routes[$action])) fail('unknown_action', 'Acción desconocida.', 404);
     [$needsPost, $handler] = $routes[$action];
     if ($needsPost && !$isPost) fail('method', 'Usa POST.', 405);
+    // Toda acción que cambia algo exige el token CSRF de la sesión (cabecera X-CSRF-Token).
+    if ($needsPost) require_csrf();
+    enforce_password_epoch();
     $result = $handler($in);
     session_write_close();
     json_out(['ok' => true] + (is_array($result) ? $result : ['data' => $result]));
@@ -49,12 +53,22 @@ function xf_routes(): array
     return [
         // ------------------------------------------------------------ TIENDA
         'bootstrap' => [false, function () {
+            // Trae los plugins que ya tienes en X-Flow Center (como mucho cada 10 minutos).
+            try { center_sync_catalog(false); } catch (Throwable $e) { error_log('[xflow-store] sync: ' . $e->getMessage()); }
             $sale = get_setting('sale');
             $all = all_products(true);
+            $customer = current_customer();
+            $owned = [];
+            if ($customer) {
+                foreach (merged_licenses_for($customer['email']) as $l) {
+                    if ($l['status'] === 'active' && $l['product_id']) $owned[] = ['product_id' => $l['product_id'], 'lifetime' => $l['lifetime'], 'expires_at' => $l['expires_at']];
+                }
+            }
             return [
-                'settings' => public_settings(),
+                'settings' => public_settings() + ['password_reset' => password_reset_available()],
                 'products' => array_map(fn($p) => product_public($p, $sale, $all), $all),
-                'customer' => current_customer(),
+                'customer' => $customer,
+                'owned' => $owned,
                 'csrf' => $_SESSION['csrf'],
                 'server_time' => gmdate('c'),
             ];
@@ -66,10 +80,15 @@ function xf_routes(): array
             $email = email_in($in, 'email');
             $pass = str_in($in, 'password', 200);
             rate_limit('login:' . client_ip(), 10, 600);
-            $u = legacy_login($email, $pass);
+            rate_limit('login_mail:' . sha1($email), 8, 900);
+            if ($pass === '') fail('bad_credentials', 'Correo o contraseña incorrectos.', 401);
+            $u = customer_login($email, $pass);
             if (!$u) fail('bad_credentials', 'Correo o contraseña incorrectos.', 401);
             session_regenerate_id(true);
-            $_SESSION['customer'] = ['email' => $email, 'aka' => $u['aka'], 'photo' => $u['photo']];
+            $_SESSION['csrf'] = random_token(16);
+            $_SESSION['customer'] = ['email' => $email, 'aka' => $u['aka'] ?: strstr($email, '@', true), 'photo' => $u['photo']];
+            $_SESSION['customer_login_at'] = time();
+            $_SESSION['customer_seen'] = time();
             return ['customer' => $_SESSION['customer'], 'csrf' => $_SESSION['csrf']];
         }],
         'logout' => [true, function () {
@@ -80,7 +99,24 @@ function xf_routes(): array
         'my_licenses' => [false, function () {
             $c = current_customer();
             if (!$c) fail('unauthorized', 'Inicia sesión.', 401);
-            return ['licenses' => array_map('license_public', rows('SELECT * FROM store_licenses WHERE email = ? ORDER BY updated_at DESC', [$c['email']]))];
+            return ['licenses' => merged_licenses_for($c['email'])];
+        }],
+        'password_forgot' => [true, function ($in) {
+            $email = email_in($in, 'email');
+            password_forgot($email);
+            return ['message' => 'Si ese correo tiene una cuenta de X-Flow Center, te enviamos un enlace para crear una nueva contraseña. Revisa también la carpeta de spam.'];
+        }],
+        'password_reset' => [true, function ($in) {
+            $email = password_reset_with_token(str_in($in, 'token', 80), (string)($in['password'] ?? ''));
+            unset($_SESSION['customer']);
+            return ['email' => $email, 'message' => 'Contraseña actualizada. Ya puedes entrar en la tienda y en X-Flow Center con la nueva contraseña.'];
+        }],
+        'password_change' => [true, function ($in) {
+            $c = current_customer();
+            if (!$c) fail('unauthorized', 'Inicia sesión.', 401);
+            password_change_logged($c['email'], (string)($in['current'] ?? ''), (string)($in['password'] ?? ''));
+            $_SESSION['customer_login_at'] = time() + 1;
+            return ['message' => 'Contraseña actualizada.'];
         }],
         'my_orders' => [false, function () {
             $c = current_customer();
@@ -174,6 +210,7 @@ function xf_routes(): array
             $email = email_in($in, 'email');
             $pass = str_in($in, 'password', 200);
             rate_limit('admin_login:' . client_ip(), 8, 900);
+            rate_limit('admin_login_mail:' . sha1($email), 6, 900);
             if (!is_admin_email($email)) fail('bad_credentials', 'Credenciales incorrectas.', 401);
             $hash = (string)cfg('admin_password_hash', '');
             $ok = $hash !== '' && password_verify($pass, $hash);
@@ -181,6 +218,7 @@ function xf_routes(): array
             if (!$ok) fail('bad_credentials', 'Credenciales incorrectas.', 401);
             session_regenerate_id(true);
             $_SESSION['admin'] = ['email' => $email, 'since' => time()];
+            $_SESSION['admin_seen'] = time();
             $_SESSION['csrf'] = random_token(16);
             admin_log('login');
             return ['admin' => $_SESSION['admin'], 'csrf' => $_SESSION['csrf']];
@@ -273,6 +311,7 @@ function xf_routes(): array
                 'bundle_all' => bool_in($p, 'bundle_all') ? 1 : 0,
                 'featured' => bool_in($p, 'featured') ? 1 : 0,
                 'is_new' => bool_in($p, 'is_new') ? 1 : 0,
+                'sync_center' => bool_in($p, 'sync_center', true) ? 1 : 0,
                 'status' => $status,
                 'sort_order' => int_in($p, 'sort_order'),
                 'updated_at' => now_utc(),
@@ -445,7 +484,12 @@ function xf_routes(): array
             $params = [];
             if ($search !== '') { $sql .= ' WHERE LOWER(email) LIKE ? OR LOWER(product_name) LIKE ?'; $params = ['%' . $search . '%', '%' . $search . '%']; }
             $sql .= ' ORDER BY updated_at DESC LIMIT 500';
-            return ['licenses' => array_map('license_public', rows($sql, $params))];
+            $list = array_map('license_public', rows($sql, $params));
+            // Buscando un correo concreto se muestran también las licencias que ya tiene en el Center.
+            if (filter_var($search, FILTER_VALIDATE_EMAIL)) {
+                $list = array_merge(array_filter($list, fn($l) => $l['email'] !== $search), merged_licenses_for($search));
+            }
+            return ['licenses' => array_values($list)];
         }],
         'admin_license_grant' => [true, function ($in) {
             $admin = require_admin();
@@ -529,11 +573,28 @@ function xf_routes(): array
                     'account' => mb_substr(trim((string)($m['account'] ?? '')), 0, 500),
                 ], array_filter($value['manual'], 'is_array')));
             }
-            if ($section === 'center' && isset($value['db']) && is_array($value['db'])) {
-                foreach (['table', 'col_email', 'col_product', 'col_product_name', 'col_expiry', 'col_status', 'col_tier', 'col_created'] as $k) {
-                    $v = trim((string)($value['db'][$k] ?? ''));
-                    if ($v !== '' && !preg_match('/^[A-Za-z0-9_]{1,64}$/', $v)) fail('center_mapping', 'Nombre inválido: ' . $v);
-                    $value['db'][$k] = $v;
+            if ($section === 'center') {
+                $idents = [
+                    'db' => ['table', 'col_email', 'col_product', 'col_product_name', 'col_expiry', 'col_status', 'col_tier', 'col_created'],
+                    'catalog' => ['table', 'col_id', 'col_name', 'col_price', 'col_price_sub', 'col_desc', 'col_image', 'col_version', 'col_active'],
+                    'users' => ['table', 'col_email', 'col_password', 'col_aka', 'col_role', 'col_photo'],
+                ];
+                foreach ($idents as $group => $keys) {
+                    if (!isset($value[$group]) || !is_array($value[$group])) continue;
+                    foreach ($keys as $k) {
+                        $v = trim((string)($value[$group][$k] ?? ''));
+                        if ($v !== '' && !preg_match('/^[A-Za-z0-9_]{1,64}$/', $v)) fail('center_mapping', 'Nombre inválido: ' . $v);
+                        $value[$group][$k] = $v;
+                    }
+                }
+                if (isset($value['catalog']['source']) && !in_array($value['catalog']['source'], ['auto', 'db', 'api', 'off'], true)) $value['catalog']['source'] = 'auto';
+                if (isset($value['users']['source']) && !in_array($value['users']['source'], ['auto', 'db', 'api'], true)) $value['users']['source'] = 'auto';
+                if (isset($value['users']['password_format']) && !in_array($value['users']['password_format'], ['auto', 'bcrypt', 'md5', 'sha1', 'sha256', 'plain'], true)) $value['users']['password_format'] = 'auto';
+                if (isset($value['catalog'])) {
+                    $value['catalog']['sub_days'] = max(1, (int)($value['catalog']['sub_days'] ?? 30));
+                    $value['catalog']['auto_publish'] = !empty($value['catalog']['auto_publish']);
+                    $u = trim((string)($value['catalog']['remote_plans_url'] ?? ''));
+                    $value['catalog']['remote_plans_url'] = preg_match('#^https?://#i', $u) ? $u : '';
                 }
             }
             settings_save_from_admin($section, $value);
@@ -543,6 +604,38 @@ function xf_routes(): array
         'admin_center_test' => [true, function () {
             require_admin();
             return ['result' => center_test()];
+        }],
+        'admin_center_sync' => [true, function () {
+            require_admin();
+            $r = center_sync_catalog(true);
+            admin_log('center_sync', $r);
+            return ['result' => $r];
+        }],
+        'admin_catalog_status' => [false, function () {
+            require_admin();
+            $r = row("SELECT v FROM store_settings WHERE k = 'catalog_sync'");
+            $l = row("SELECT v FROM store_settings WHERE k = 'legacy_import'");
+            return ['sync' => $r ? json_dec($r['v'], null) : null, 'legacy' => $l ? json_dec($l['v'], null) : null];
+        }],
+        'admin_import_legacy' => [true, function () {
+            require_admin();
+            $r = center_import_legacy_config();
+            admin_log('legacy_import', $r);
+            return ['result' => $r];
+        }],
+        'admin_users_test' => [true, function ($in) {
+            require_admin();
+            $m = center_users_cfg();
+            if (!center_users_table_ok()) {
+                return ['result' => ['ok' => false, 'message' => 'No se encontró la tabla "' . ($m['table'] ?? '') . '" con las columnas "' . ($m['col_email'] ?? '') . '" y "' . ($m['col_password'] ?? '') . '". El login seguirá usando login.php y no se podrá recuperar la contraseña desde la tienda.']];
+            }
+            $email = mb_strtolower(str_in($in, 'email', 190));
+            $msg = 'Tabla de usuarios encontrada: la tienda puede validar cuentas y restablecer contraseñas.';
+            if ($email !== '') {
+                $row = center_user_row($email);
+                $msg .= $row ? ' La cuenta ' . $email . ' existe (contraseña guardada como ' . password_format_of((string)($row[$m['col_password']] ?? '')) . ').' : ' No existe ninguna cuenta con ' . $email . '.';
+            }
+            return ['result' => ['ok' => true, 'message' => $msg]];
         }],
         'admin_center_describe' => [false, function () {
             require_admin();

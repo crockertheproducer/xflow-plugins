@@ -52,8 +52,13 @@ return [
     'allowed_origins' => [],
 
     // ---------------------------------------------------------------- CORREO
+    // Remitente de los correos (confirmación de compra, recuperar contraseña…).
+    // Usa un correo de TU dominio para que no caigan en spam.
     'mail_from' => 'X-FLOW <no-reply@xflowbeats.online>',
     'send_emails' => true,
+    // Solo para pruebas: ruta de un archivo donde guardar los correos en vez de enviarlos.
+    // Déjalo vacío en tu servidor real.
+    'mail_log' => '',
 
     // ---------------------------------------------------------------- CLAVES SECRETAS (opcional)
     // Si las rellenas aquí tienen prioridad sobre las del panel.

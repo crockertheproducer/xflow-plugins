@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const XF_SCHEMA_VERSION = 1;
+const XF_SCHEMA_VERSION = 2;
 
 function db(): PDO
 {
@@ -199,6 +199,21 @@ function db_migrate(PDO $pdo): void
         'CREATE UNIQUE INDEX ux_subscribers_email ON store_subscribers (email)',
     ];
     foreach ($indexes as $sql) {
+        try { $pdo->exec($sql); } catch (Throwable $e) { /* ya existe */ }
+    }
+
+    // ---- v2: sincronización con el catálogo del Center + recuperación de contraseña
+    try { $pdo->exec('ALTER TABLE store_products ADD COLUMN sync_center TINYINT NOT NULL DEFAULT 1'); } catch (Throwable $e) { /* ya existe */ }
+    $pdo->exec("CREATE TABLE IF NOT EXISTS store_password_resets (
+            id $pk,
+            email VARCHAR(190) NOT NULL,
+            token_hash CHAR(64) NOT NULL,
+            expires_at DATETIME NOT NULL,
+            used_at DATETIME NULL,
+            ip VARCHAR(64) NOT NULL DEFAULT '',
+            created_at DATETIME NULL
+        )$tail");
+    foreach (['CREATE UNIQUE INDEX ux_resets_token ON store_password_resets (token_hash)', 'CREATE INDEX ix_resets_email ON store_password_resets (email)'] as $sql) {
         try { $pdo->exec($sql); } catch (Throwable $e) { /* ya existe */ }
     }
 

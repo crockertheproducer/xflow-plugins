@@ -328,3 +328,6 @@
 
 .reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease, transform .6s ease; }
 .reveal.in { opacity: 1; transform: none; }
+
+.pw-meter { height: 5px; border-radius: 5px; background: var(--line-2); overflow: hidden; margin-top: -4px; }
+.pw-meter i { display: block; height: 100%; width: 0; transition: width .2s, background .2s; }

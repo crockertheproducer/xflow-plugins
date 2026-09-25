@@ -19,6 +19,7 @@
     filter: { cat: 'Todos', sort: 'featured', q: '' },
     method: '',
     timers: [],
+    owned: [],
   };
 
   /* ================================================================ datos */
@@ -30,6 +31,8 @@
   const lifetimePlan = (p) => p.plans.find((x) => x.type === 'lifetime') || p.plans[0];
   const subPlan = (p) => p.plans.filter((x) => x.type === 'days').sort((a, b) => a.days - b.days)[0];
   const saleLive = () => S.settings && S.settings.sale && S.settings.sale.active;
+  /** Licencia activa del cliente para este producto (compras en la tienda o licencias previas del Center). */
+  const ownedOf = (p) => S.owned.find((o) => o.product_id === p.id) || null;
 
   /* ================================================================ piezas */
   function mediaHTML(p, cls) {
@@ -58,7 +61,9 @@
     if (p.badge) flags.push('<span class="pill grad-bg">' + esc(p.badge) + '</span>');
     else if (p.is_new) flags.push('<span class="pill grad-bg">NUEVO</span>');
     else flags.push('<span></span>');
-    if (p.discount_active > 0) flags.push('<span class="off">-' + p.discount_active + '%</span>');
+    const own = ownedOf(p);
+    if (own) flags.push('<span class="pill ok">' + icon('check') + (own.lifetime ? 'YA LO TIENES' : 'ACTIVO') + '</span>');
+    else if (p.discount_active > 0) flags.push('<span class="off">-' + p.discount_active + '%</span>');
     const cat = p.type === 'bundle' ? 'PACK · ' + (p.includes ? p.includes.length : 0) + ' PLUGINS' : (p.category ? esc(p.category) + ' · ' : '') + esc((p.specs && p.specs.formats) || 'VST3');
     return '<article class="pcard' + (soon ? ' soon-card' : '') + ' reveal">' +
       '<a class="pcard-media" href="#/p/' + esc(p.slug) + '"><div class="pcard-flags">' + flags.join('') + '</div>' + mediaHTML(p) + '</a>' +
@@ -66,7 +71,8 @@
       '<h3><a href="#/p/' + esc(p.slug) + '">' + esc(p.name) + '</a></h3>' +
       (p.tagline ? '<p>' + esc(p.tagline) + '</p>' : '') +
       '<div class="pcard-foot">' + (soon ? '<div class="price"><b style="font-size:1rem;color:var(--accent)">PRÓXIMAMENTE</b></div>' : priceHTML(p)) +
-      (soon || !lp ? '<button class="add-btn" disabled aria-label="Próximamente">' + icon('clock') + '</button>' : '<button class="add-btn" data-action="add" data-id="' + p.id + '" data-plan="' + esc(lp.id) + '" aria-label="Añadir ' + esc(p.name) + ' al carrito">' + icon('plus') + '</button>') +
+      (own && own.lifetime ? '<a class="add-btn" href="#/cuenta" aria-label="Ya tienes ' + esc(p.name) + '" style="background:color-mix(in srgb,var(--ok) 25%,var(--panel))">' + icon('check') + '</a>' :
+        soon || !lp ? '<button class="add-btn" disabled aria-label="Próximamente">' + icon('clock') + '</button>' : '<button class="add-btn" data-action="add" data-id="' + p.id + '" data-plan="' + esc(lp.id) + '" aria-label="Añadir ' + esc(p.name) + ' al carrito">' + icon('plus') + '</button>') +
       '</div></div></article>';
   }
 
@@ -331,6 +337,8 @@
 
     h += '<aside class="buy-box"><div style="display:flex;gap:8px;flex-wrap:wrap">' + (p.badge ? '<span class="pill grad-bg">' + esc(p.badge) + '</span>' : '') + (p.discount_active ? '<span class="off">-' + p.discount_active + '%</span>' : '') + '<span class="pill">' + esc(p.type === 'bundle' ? 'PACK' : p.category || 'PLUGIN') + '</span></div>' +
       '<h1>' + esc(p.name) + '</h1><p class="tag">' + esc(p.tagline || '') + '</p>';
+    const own = ownedOf(p);
+    if (own) h += '<div class="notice ok" style="margin-bottom:14px">' + icon('check-circle') + '<span>' + (own.lifetime ? 'Ya tienes este plugin de forma <b>permanente</b> en tu cuenta de X-Flow Center.' : 'Tienes acceso activo hasta el <b>' + XF.date(own.expires_at) + '</b>. Si compras de nuevo, los días se suman.') + '</span></div>';
     if (soon) {
       h += '<div class="notice warn">' + icon('clock') + '<span>Este producto sale muy pronto. Suscríbete abajo para enterarte del lanzamiento.</span></div>';
     } else if (plans.length) {
@@ -692,7 +700,7 @@
   }
   function licCard(l) {
     const st = l.status === 'active' ? '<span class="pill ok">Activa</span>' : l.status === 'expired' ? '<span class="pill warn">Vencida</span>' : '<span class="pill bad">' + esc(l.status) + '</span>';
-    return '<div class="lic"><b>' + esc(l.product_name) + '</b><div class="meta">' + st + (l.lifetime ? '<span class="pill info">Permanente</span>' : '<span>Hasta ' + XF.date(l.expires_at) + '</span>') + (l.source === 'gift' ? '<span class="pill accent">' + icon('gift') + 'Regalo</span>' : '') + '</div>' +
+    return '<div class="lic"><b>' + esc(l.product_name) + '</b><div class="meta">' + st + (l.lifetime ? '<span class="pill info">Permanente</span>' : '<span>Hasta ' + XF.date(l.expires_at) + '</span>') + (l.source === 'gift' ? '<span class="pill accent">' + icon('gift') + 'Regalo</span>' : '') + (l.source === 'center' ? '<span class="pill">De tu cuenta del Center</span>' : '') + '</div>' +
       '<div class="meta">' + (l.center_synced ? icon('check-circle') + '<span>En X-Flow Center</span>' : icon('clock') + '<span>Activación en proceso</span>') + '</div></div>';
   }
 
@@ -702,11 +710,52 @@
       return '<div class="wrap"><div class="auth-card"><span class="eyebrow">Mi cuenta</span><h1>Inicia sesión</h1><p class="muted" style="margin:0 0 18px">Usa tu cuenta de <b>X-Flow Center</b>. Es la misma para la tienda y la app.</p>' +
         (XF.demo ? '<div class="notice warn" style="margin-bottom:14px">' + icon('info') + '<span>Laboratorio: entra con cualquier correo y una clave de 4+ caracteres.</span></div>' : '') +
         '<form data-form="login" style="display:grid;gap:12px"><label class="field"><span>Correo</span><input name="email" type="email" required autocomplete="email"></label><label class="field"><span>Contraseña</span><input name="password" type="password" required autocomplete="current-password"></label><button class="btn primary lg block">' + icon('user') + 'Entrar</button></form>' +
+        '<p style="margin:14px 0 0;text-align:center"><a class="link-more" style="display:inline-flex" href="#/recuperar">' + icon('key') + '¿Olvidaste tu contraseña?</a></p>' +
         '<p class="muted" style="font-size:.82rem;margin:16px 0 0">¿No tienes cuenta? Descarga X-Flow Center y créala desde la app. También puedes comprar sin cuenta usando tu correo.</p>' + recentOrdersHTML() + '</div></div>';
     }
     return '<div class="wrap"><div class="page-title"><span class="eyebrow">Mi cuenta</span><h1>Hola, <span class="grad">' + esc(S.customer.aka || S.customer.email.split('@')[0]) + '</span></h1><p>' + esc(S.customer.email) + ' · <a href="#" data-action="logout" style="text-decoration:underline">Cerrar sesión</a></p></div>' +
       '<section class="sec tight"><h2 class="eyebrow" style="font-size:.85rem">Mis licencias</h2><div id="acc-lic" style="margin-top:14px"><div class="skeleton" style="height:120px"></div></div></section>' +
-      '<section class="sec tight"><h2 class="eyebrow" style="font-size:.85rem">Mis pedidos</h2><div id="acc-orders" style="margin-top:14px"><div class="skeleton" style="height:120px"></div></div></section></div>';
+      '<section class="sec tight"><h2 class="eyebrow" style="font-size:.85rem">Mis pedidos</h2><div id="acc-orders" style="margin-top:14px"><div class="skeleton" style="height:120px"></div></div></section>' +
+      (S.settings.password_reset ? '<section class="sec tight"><details class="co-card" style="max-width:560px"><summary style="cursor:pointer;font-weight:700;display:flex;gap:.6em;align-items:center">' + icon('lock') + 'Cambiar contraseña</summary>' +
+        '<form data-form="pwchange" style="display:grid;gap:12px;margin-top:16px"><label class="field"><span>Contraseña actual</span><input name="current" type="password" required autocomplete="current-password"></label>' + newPasswordFields() +
+        '<button class="btn primary">' + icon('save') + 'Guardar nueva contraseña</button><p class="muted" style="font-size:.78rem;margin:0">Se cambia también en X-Flow Center. Te avisaremos por correo.</p></form></details></section>' : '') + '</div>';
+  }
+
+  function newPasswordFields() {
+    return '<label class="field"><span>Nueva contraseña</span><input name="password" type="password" required minlength="8" maxlength="128" autocomplete="new-password" data-strength></label>' +
+      '<div class="pw-meter" aria-hidden="true"><i></i></div><small class="muted pw-hint" style="font-size:.76rem;margin-top:-6px">Mínimo 8 caracteres, con letras y números.</small>' +
+      '<label class="field"><span>Repite la contraseña</span><input name="password2" type="password" required autocomplete="new-password"></label>';
+  }
+  function pwScore(pw) {
+    let sc = 0;
+    if (pw.length >= 8) sc++;
+    if (pw.length >= 12) sc++;
+    if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) sc++;
+    if (/\d/.test(pw) && /[A-Za-z]/.test(pw)) sc++;
+    if (/[^A-Za-z0-9]/.test(pw)) sc++;
+    return Math.min(4, sc);
+  }
+  function pwLocalProblem(pw, pw2) {
+    if (pw.length < 8) return 'La contraseña debe tener al menos 8 caracteres.';
+    if (!/[A-Za-z]/.test(pw) || !/\d/.test(pw)) return 'Usa letras y números.';
+    if (pw !== pw2) return 'Las contraseñas no coinciden.';
+    return '';
+  }
+
+  function pageForgot() {
+    const avail = S.settings.password_reset;
+    return '<div class="wrap"><div class="auth-card"><span class="eyebrow">Recuperar acceso</span><h1>¿Olvidaste tu contraseña?</h1>' +
+      (avail ? '<p class="muted" style="margin:0 0 18px">Escribe el correo de tu cuenta de X-Flow Center. Te enviaremos un enlace para crear una nueva contraseña (caduca en 30 minutos).</p>' +
+        '<form data-form="forgot" style="display:grid;gap:12px"><label class="field"><span>Correo</span><input name="email" type="email" required autocomplete="email"></label><button class="btn primary lg block">' + icon('mail') + 'Enviar enlace</button></form>' +
+        '<div id="forgot-done" class="notice ok hide" style="margin-top:14px">' + icon('check-circle') + '<span></span></div>'
+        : '<div class="notice warn">' + icon('info') + '<span>Para recuperar tu contraseña escríbenos a <a href="mailto:' + esc(S.site.support_email || '') + '" style="text-decoration:underline">' + esc(S.site.support_email || 'soporte') + '</a> o desde <a href="#/soporte" style="text-decoration:underline">Soporte</a>.</span></div>') +
+      '<p style="margin:16px 0 0"><a class="link-more" style="display:inline-flex" href="#/cuenta">' + icon('arrow-left') + 'Volver a iniciar sesión</a></p></div></div>';
+  }
+
+  function pageReset() {
+    if (!S.resetToken) return '<div class="wrap"><div class="auth-card"><h1>Enlace no válido</h1><p class="muted">Pide un enlace nuevo para restablecer tu contraseña.</p><a class="btn primary" style="margin-top:12px" href="#/recuperar">Pedir enlace</a></div></div>';
+    return '<div class="wrap"><div class="auth-card"><span class="eyebrow">Nueva contraseña</span><h1>Crea tu nueva contraseña</h1><p class="muted" style="margin:0 0 18px">Se usará en la tienda y en X-Flow Center.</p>' +
+      '<form data-form="reset" style="display:grid;gap:12px">' + newPasswordFields() + '<button class="btn primary lg block">' + icon('lock') + 'Guardar contraseña</button></form></div></div>';
   }
   function recentOrdersHTML() {
     const list = XF.store.get('xf_orders', []);
@@ -737,7 +786,13 @@
     const r = route();
     $$('#nav a').forEach((a) => a.classList.toggle('on', a.getAttribute('href') === '#/' + r.name));
   }
+  /** El token de restablecer se guarda en memoria y se quita de la barra de direcciones (no queda en el historial). */
+  function captureResetToken() {
+    const mt = (location.hash || '').match(/^#\/restablecer\/([a-f0-9]{64})$/);
+    if (mt) { S.resetToken = mt[1]; history.replaceState(null, '', location.pathname + location.search + '#/restablecer'); }
+  }
   function render() {
+    captureResetToken();
     S.timers.forEach(clearTimeout);
     S.timers = [];
     const r = route();
@@ -753,6 +808,8 @@
       case 'checkout': html = pageCheckout(); break;
       case 'pedido': html = pageOrder(r.parts[1] || '', r.parts[2] || ''); break;
       case 'cuenta': html = pageAccount(); break;
+      case 'recuperar': html = pageForgot(); break;
+      case 'restablecer': html = pageReset(); break;
       case 'center': html = pageCenter(); break;
       case 'soporte': html = pageSupport(); break;
       case 'terminos': html = pageTerms(); break;
@@ -849,7 +906,7 @@
       case 'logout':
         e.preventDefault();
         try { await XF.api('logout', {}); } catch (x) {}
-        S.customer = null; updateAccountBtn(); render();
+        S.customer = null; S.owned = []; updateAccountBtn(); render();
         break;
       case 'demo-pay': {
         const v = $('#order-view');
@@ -877,6 +934,12 @@
     if (t.dataset.action === 'gift-toggle') $('#gift-fields').classList.toggle('hide', !t.checked);
     if (t.id === 'sort') { S.filter.sort = t.value; renderCatalogGrid(route().name); }
   });
+  document.addEventListener('input', (e) => {
+    if (!e.target.matches('[data-strength]')) return;
+    const sc = pwScore(e.target.value);
+    const bar = e.target.closest('form').querySelector('.pw-meter i');
+    if (bar) { bar.style.width = (e.target.value ? 25 * Math.max(1, sc) : 0) + '%'; bar.style.background = ['var(--bad)', 'var(--bad)', 'var(--warn)', 'var(--ok)', 'var(--ok)'][sc]; }
+  });
   document.addEventListener('input', XF.debounce((e) => {
     if (e.target.id === 'q') { S.filter.q = e.target.value; renderCatalogGrid(route().name); }
   }, 150));
@@ -894,9 +957,34 @@
     try {
       if (kind === 'subscribe') { await XF.api('subscribe', { email: fd.get('email') }); f.reset(); XF.toast('¡Listo! Te avisaremos de lo nuevo.', 'success'); }
       if (kind === 'ticket') { await XF.api('support_ticket', Object.fromEntries(fd)); f.reset(); XF.toast('Mensaje enviado. Te respondemos pronto.', 'success'); }
+      if (kind === 'forgot') {
+        const r = await XF.api('password_forgot', { email: String(fd.get('email') || '').trim() });
+        const box = $('#forgot-done');
+        box.querySelector('span').textContent = r.message;
+        box.classList.remove('hide');
+        f.reset();
+      }
+      if (kind === 'reset' || kind === 'pwchange') {
+        const pw = String(fd.get('password') || ''), pw2 = String(fd.get('password2') || '');
+        const prob = pwLocalProblem(pw, pw2);
+        if (prob) throw new Error(prob);
+        if (kind === 'reset') {
+          const r = await XF.api('password_reset', { token: S.resetToken, password: pw });
+          S.resetToken = '';
+          S.customer = null; S.owned = [];
+          updateAccountBtn();
+          XF.toast(r.message, 'success');
+          location.hash = '#/cuenta';
+        } else {
+          const r = await XF.api('password_change', { current: String(fd.get('current') || ''), password: pw });
+          f.reset();
+          XF.toast(r.message, 'success');
+        }
+      }
       if (kind === 'login') {
         const r = await XF.api('login', { email: fd.get('email'), password: fd.get('password') });
-        S.customer = r.customer; updateAccountBtn(); XF.toast('Sesión iniciada', 'success'); render();
+        S.customer = r.customer; updateAccountBtn(); XF.toast('Sesión iniciada', 'success');
+        await reloadCatalog(); render();
       }
     } catch (err) { XF.toast(err.message, 'error'); } finally { btn && btn.classList.remove('is-busy'); }
   });
@@ -912,12 +1000,14 @@
     S.site = b.settings.site || {};
     S.products = b.products || [];
     S.customer = b.customer || null;
+    S.owned = b.owned || [];
     S.currency = b.settings.currency || 'USD';
     XF.currency = S.currency;
   }
 
   async function init() {
     // Retorno desde Stripe / Binance:  index.html?order=XF...&t=TOKEN
+    captureResetToken();
     const qs = new URLSearchParams(location.search);
     if (qs.get('order') && qs.get('t')) {
       const id = qs.get('order'), tk = qs.get('t');

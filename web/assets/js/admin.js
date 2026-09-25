@@ -175,7 +175,7 @@
       (r.licenses.length ? '<div class="table-wrap"><table class="tbl"><thead><tr><th>Correo</th><th>Producto</th><th>Tipo</th><th>Vence</th><th>Origen</th><th>X-Flow Center</th><th>Estado</th><th></th></tr></thead><tbody>' +
         r.licenses.map((l) => '<tr><td>' + esc(l.email) + '</td><td>' + esc(l.product_name) + (l.tier ? ' <span class="pill">' + esc(l.tier) + '</span>' : '') + '</td><td>' + (l.lifetime ? '<span class="pill info">Permanente</span>' : 'Por días') + '</td><td>' + (l.lifetime ? '—' : XF.date(l.expires_at)) + '</td><td>' + ({ purchase: 'Compra', gift: '<span class="pill accent">Regalo</span>', manual: 'Manual' }[l.source] || esc(l.source)) + (l.note ? '<br><small class="dim">' + esc(l.note) + '</small>' : '') + '</td>' +
           '<td>' + (l.center_synced ? '<span class="pill ok">Sincronizada</span>' : '<span class="pill warn" title="' + esc(l.center_message) + '">Pendiente</span>') + '<br><small class="dim">' + esc(l.center_message || '') + '</small></td><td>' + (l.status === 'active' ? '<span class="pill ok">Activa</span>' : l.status === 'expired' ? '<span class="pill warn">Vencida</span>' : '<span class="pill bad">' + esc(l.status) + '</span>') + '</td>' +
-          '<td><div class="acts"><button class="btn ghost sm" data-a="lic-extend" data-id="' + l.id + '" title="Añadir días o hacer permanente">' + icon('plus') + '</button><button class="btn ghost sm" data-a="lic-resync" data-id="' + l.id + '" title="Reenviar a X-Flow Center">' + icon('refresh') + '</button>' + (l.status !== 'revoked' ? '<button class="btn danger sm" data-a="lic-revoke" data-id="' + l.id + '" title="Revocar">' + icon('ban') + '</button>' : '') + '</div></td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">' + icon('key') + 'No hay licencias' + (q ? ' con ese filtro' : ' todavía') + '.</div>') + '</div>';
+          '<td>' + (l.source === 'center' ? '<span class="pill" title="Licencia existente en X-Flow Center (no creada por la tienda)">Del Center</span>' : '<div class="acts"><button class="btn ghost sm" data-a="lic-extend" data-id="' + l.id + '" title="Añadir días o hacer permanente">' + icon('plus') + '</button><button class="btn ghost sm" data-a="lic-resync" data-id="' + l.id + '" title="Reenviar a X-Flow Center">' + icon('refresh') + '</button>' + (l.status !== 'revoked' ? '<button class="btn danger sm" data-a="lic-revoke" data-id="' + l.id + '" title="Revocar">' + icon('ban') + '</button>' : '') + '</div>') + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">' + icon('key') + 'No hay licencias' + (q ? ' con ese filtro' : ' todavía') + '.</div>') + '</div>';
   };
   function giftModal() {
     const opts = A.products.filter((p) => p.type !== 'sample_pack').map((p) => '<option value="' + p.id + '">' + esc(p.name) + (p.type === 'bundle' ? ' (pack)' : '') + '</option>').join('');
@@ -215,7 +215,7 @@
         const st = stLabel[p.status] || [p.status, ''];
         const inc = p.type === 'bundle' ? (p.bundle_all ? 'Todos los plugins' : (p.bundle_items || []).map((id) => (A.products.find((x) => x.id === id) || {}).name).filter(Boolean).join(', ') || '—') : '<span class="mono">' + esc(p.center_id || '—') + '</span>';
         return '<tr><td><div class="thumb">' + (p.image ? '<img src="' + esc(XF.asset(p.image)) + '" alt="">' : icon(p.type === 'bundle' ? 'layers' : 'plug')) + '</div></td>' +
-          '<td class="name"><b>' + esc(p.name) + '</b><small>/' + esc(p.slug) + '</small>' + (p.badge ? ' <span class="pill grad-bg">' + esc(p.badge) + '</span>' : '') + (p.featured ? ' <span class="pill">Destacado</span>' : '') + '</td>' +
+          '<td class="name"><b>' + esc(p.name) + '</b><small>/' + esc(p.slug) + '</small>' + (p.badge ? ' <span class="pill grad-bg">' + esc(p.badge) + '</span>' : '') + (p.featured ? ' <span class="pill">Destacado</span>' : '') + (p.type === 'plugin' && p.center_id ? (p.sync_center ? ' <span class="pill info" title="Nombre y precios vienen de X-Flow Center">' + icon('refresh') + 'Center</span>' : ' <span class="pill" title="Sincronización desactivada">Manual</span>') : '') + '</td>' +
           '<td>' + inc + '</td><td>' + p.plans.map((pl) => esc(pl.label) + ': <b>' + money(pl.price) + '</b>').join('<br>') + '</td>' +
           '<td>' + (p.discount_percent ? '<span class="off">-' + p.discount_percent + '%</span>' + (p.discount_ends_at ? '<br><small class="dim">hasta ' + XF.date(p.discount_ends_at) + '</small>' : '') : '<span class="dim">—</span>') + '</td>' +
           '<td><span class="pill ' + st[1] + '">' + st[0] + '</span></td>' +
@@ -223,11 +223,20 @@
       }).join('') + '</tbody></table></div>';
   }
   SECTIONS.productos = async (c) => {
-    await loadProducts();
+    const [, st] = await Promise.all([loadProducts(), XF.api('admin_catalog_status').catch(() => ({}))]);
     const list = A.products.filter((p) => p.type === 'plugin' || p.type === 'sample_pack');
-    c.innerHTML = '<div class="panel"><div class="panel-head"><h2>' + icon('plug') + 'Plugins</h2><div class="bar-actions"><button class="btn ghost" data-a="import-center">' + icon('download') + 'Importar del Center</button><button class="btn primary" data-a="new-product" data-type="plugin">' + icon('plus') + 'Nuevo plugin</button></div></div>' +
-      '<p class="help">Cada plugin necesita su <b>ID en X-Flow Center</b>: es el identificador que la tienda escribe en tu base de datos para activar la licencia. Usa “Importar del Center” para traer los plugins que ya tienes registrados.</p>' + productsTable(list, 'plugin') + '</div>';
+    c.innerHTML = '<div class="panel"><div class="panel-head"><h2>' + icon('plug') + 'Plugins</h2><div class="bar-actions"><button class="btn ghost" data-a="center-sync">' + icon('refresh') + 'Sincronizar con el Center</button><button class="btn ghost" data-a="legacy-import">' + icon('download') + 'Importar de mi web anterior</button><button class="btn primary" data-a="new-product" data-type="plugin">' + icon('plus') + 'Nuevo plugin</button></div></div>' +
+      syncStatusHTML(st && st.sync, st && st.legacy) +
+      '<p class="help">Los plugins que ya subiste a X-Flow Center aparecen solos: la tienda lee tu base de datos cada 10 minutos (nombre, precio permanente, precio de suscripción, imagen, descripción y versión). Tú decides aquí descuentos, etiquetas, destacados, galería y packs. Para controlar un plugin a mano, desactiva “Sincronizar con X-Flow Center” en su ficha.</p>' + productsTable(list, 'plugin') + '</div>';
   };
+  function syncStatusHTML(sync, legacy) {
+    if (!sync) return '<div class="notice warn" style="margin-bottom:14px">' + icon('info') + '<span>Aún no se ha leído el catálogo del Center. Pulsa “Sincronizar con el Center”.</span></div>';
+    const when = sync.at ? XF.date(new Date(sync.at * 1000).toISOString(), true) : '—';
+    const src = { db: 'tu base de datos', api: 'soporte_api.php (obtener_plugins)', off: 'desactivado' }[sync.source] || sync.source || '—';
+    if (sync.error) return '<div class="notice warn" style="margin-bottom:14px">' + icon('alert') + '<span><b>No se pudo leer el catálogo del Center</b> (' + esc(when) + '): ' + esc(sync.error) + ' Revisa <a href="#center" style="text-decoration:underline">X-Flow Center → Catálogo</a>.</span></div>';
+    return '<div class="notice ok" style="margin-bottom:14px">' + icon('check-circle') + '<span>Catálogo leído de <b>' + esc(src) + '</b> · ' + esc(when) + ' · ' + sync.found + ' plugins en el Center' + (sync.created ? ' · ' + sync.created + ' nuevos' : '') + (sync.updated ? ' · ' + sync.updated + ' actualizados' : '') +
+      (legacy ? ' · Web anterior importada (' + (legacy.plugins_updated || 0) + ' ajustes, ' + (legacy.packs_created || 0) + ' packs)' : '') + '</span></div>';
+  }
   SECTIONS.packs = async (c) => {
     await loadProducts();
     c.innerHTML = '<div class="panel"><div class="panel-head"><h2>' + icon('layers') + 'Packs</h2><button class="btn primary" data-a="new-product" data-type="bundle">' + icon('plus') + 'Nuevo pack</button></div>' +
@@ -280,7 +289,8 @@
       '<datalist id="cats">' + Array.from(new Set(A.products.map((x) => x.category).filter(Boolean))).map((c) => '<option value="' + esc(c) + '">').join('') + '</datalist>' +
 
       '<div class="panel" style="margin:0" id="center-box"><h2 style="font-size:1rem">' + icon('database') + 'Activación en X-Flow Center</h2>' +
-      '<label class="field"><span>ID del plugin en X-Flow Center</span><input name="center_id" list="center-ids" value="' + esc(p.center_id) + '" placeholder="ej: channelstrip" style="font-family:var(--mono)"><small>Debe coincidir con el identificador que usa tu base de datos del Center.' + (isBundle ? ' En packs no hace falta: se activa cada plugin incluido.' : '') + '</small></label><datalist id="center-ids"></datalist></div>' +
+      '<label class="field"><span>ID del plugin en X-Flow Center</span><input name="center_id" list="center-ids" value="' + esc(p.center_id) + '" placeholder="ej: channelstrip" style="font-family:var(--mono)"><small>Debe coincidir con el identificador que usa tu base de datos del Center.' + (isBundle ? ' En packs no hace falta: se activa cada plugin incluido.' : '') + '</small></label><datalist id="center-ids"></datalist>' +
+      (isBundle ? '' : '<label class="switch" style="margin-top:12px"><input type="checkbox" name="sync_center"' + (p.sync_center !== false ? ' checked' : '') + '> Sincronizar con X-Flow Center <span class="dim" style="font-size:.8rem">(nombre y precios Permanente/Mensual vienen del Center)</span></label>') + '</div>' +
 
       '<div class="panel" style="margin:0"><div class="panel-head" style="margin-bottom:10px"><h2 style="font-size:1rem">' + icon('tag') + 'Precios</h2><div class="bar-actions"><button type="button" class="btn ghost sm" data-pe="add" data-p="lifetime">+ Permanente</button><button type="button" class="btn ghost sm" data-pe="add" data-p="monthly">+ Mensual</button><button type="button" class="btn ghost sm" data-pe="add" data-p="yearly">+ Anual</button><button type="button" class="btn ghost sm" data-pe="add" data-p="custom">+ Otro</button></div></div>' +
       '<div class="plan-rows" id="plan-rows">' + p.plans.map(planRow).join('') + '</div>' +
@@ -347,7 +357,7 @@
         gallery: f.gallery.value.split('\n').map((s) => s.trim()).filter(Boolean), video_url: f.video_url.value.trim(), description: f.description.value,
         features: f.features.value.split('\n').map((s) => s.trim()).filter(Boolean),
         specs: { formats: f.spec_formats.value, os: f.spec_os.value, version: f.spec_version.value, size: f.spec_size.value },
-        featured: f.featured.checked, is_new: f.is_new.checked,
+        featured: f.featured.checked, is_new: f.is_new.checked, sync_center: f.sync_center ? f.sync_center.checked : false,
       };
       if (data.type === 'bundle' && !data.bundle_all && !data.bundle_items.length) { XF.toast('Elige los plugins del pack o activa “Todo en uno”.', 'error'); return; }
       const b = f.querySelector('button.primary');
@@ -485,7 +495,8 @@
       '<div class="panel"><div class="panel-head"><h2>' + icon('search') + 'Tablas detectadas</h2><button type="button" class="btn ghost sm" data-a="describe">' + icon('refresh') + 'Leer estructura</button></div><p class="help">Lee (solo lectura) las tablas y columnas de tu base de datos para rellenar el mapeo.</p><div class="tables-list" id="tables"></div></div></div>' +
       '<div class="panel" id="http-box"><h2>' + icon('globe') + 'Endpoint HTTP</h2><p class="help">La tienda envía un POST JSON firmado con HMAC-SHA256 (cabecera <span class="mono">X-XFlow-Signature</span>) con: email, product_id, lifetime, days, expires_at, tier, order_id. Tienes un receptor de ejemplo en <span class="mono">api/center_receiver_example.php</span>.</p><div class="fgrid"><label class="field"><span>URL</span><input name="http.url" value="' + esc((ce.http || {}).url || '') + '" placeholder="https://xflowbeats.online/store_hook.php"></label>' +
       '<label class="field"><span>Secreto compartido' + (locked.includes('http.secret') ? ' <em class="soon">config.php</em>' : '') + '</span><input name="http.secret" type="password" value="' + esc((ce.http || {}).secret || '') + '"' + (locked.includes('http.secret') ? ' disabled' : '') + '></label></div></div>' +
-      '<div class="save-bar"><button type="button" class="btn ghost lg" data-a="center-test">' + icon('activity') + 'Probar conexión</button><button class="btn primary lg">' + icon('save') + 'Guardar</button></div></form>';
+      catalogPanel(ce.catalog || {}) + usersPanel(ce.users || {}) +
+      '<div class="save-bar"><button type="button" class="btn ghost lg" data-a="center-test">' + icon('activity') + 'Probar licencias</button><button class="btn primary lg">' + icon('save') + 'Guardar</button></div></form>';
     const f = $('#center-form');
     const sync = () => { $('#db-box').style.display = f.mode.value === 'db' ? '' : 'none'; $('#http-box').style.display = f.mode.value === 'http' ? '' : 'none'; };
     f.mode.addEventListener('change', sync);
@@ -495,12 +506,36 @@
       try { await saveCenter(); XF.toast('Conexión guardada.', 'success'); } catch (err) { XF.toast(err.message, 'error'); }
     });
   };
+  function catalogPanel(cat) {
+    const inp = (name, key, ph) => '<label class="field"><span>' + name + '</span><input name="catalog.' + key + '" value="' + esc(cat[key] || '') + '" placeholder="' + esc(ph || '') + '" style="font-family:var(--mono)"></label>';
+    return '<div class="panel"><div class="panel-head"><h2>' + icon('plug') + 'Catálogo: tus plugins del Center</h2><div class="bar-actions"><button type="button" class="btn ghost sm" data-a="center-sync">' + icon('refresh') + 'Sincronizar ahora</button><button type="button" class="btn ghost sm" data-a="legacy-import">' + icon('download') + 'Importar web anterior</button></div></div>' +
+      '<p class="help">De aquí salen los plugins que ya tienes subidos. <b>Automático</b> lee la tabla de plugins de tu base de datos y, si no existe, usa <span class="mono">soporte_api.php?accion=obtener_plugins</span> (lo mismo que tu web anterior). Solo lectura.</p>' +
+      '<div class="fgrid"><label class="field"><span>Origen</span><select name="catalog.source">' + [['auto', 'Automático (BD y si no la API)'], ['db', 'Solo base de datos'], ['api', 'Solo soporte_api.php'], ['off', 'Desactivado']].map((o) => '<option value="' + o[0] + '"' + (cat.source === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' +
+      inp('Tabla de plugins', 'table', 'plugins') + inp('Columna ID', 'col_id', 'id') + inp('Columna nombre', 'col_name', 'nombre') + inp('Columna precio permanente', 'col_price', 'precio_perm') + inp('Columna precio suscripción', 'col_price_sub', 'precio_sub') +
+      inp('Columna descripción', 'col_desc', 'descripcion') + inp('Columna imagen', 'col_image', 'imagen_url') + inp('Columna versión', 'col_version', 'version') + inp('Columna activo (opcional)', 'col_active', 'activo') +
+      '<label class="field"><span>Días de la suscripción</span><input name="catalog.sub_days" type="number" min="1" value="' + (cat.sub_days || 30) + '"></label>' +
+      '<label class="field"><span>Planes de X-Flow Remote (URL)</span><input name="catalog.remote_plans_url" value="' + esc(cat.remote_plans_url || '') + '" placeholder="https://remote.xflowbeats.online/api/planes"></label>' +
+      '<label class="switch" style="align-self:end"><input type="checkbox" name="catalog.auto_publish"' + (cat.auto_publish !== false ? ' checked' : '') + '> Publicar solos los plugins nuevos</label></div></div>';
+  }
+  function usersPanel(u) {
+    const inp = (name, key, ph) => '<label class="field"><span>' + name + '</span><input name="users.' + key + '" value="' + esc(u[key] || '') + '" placeholder="' + esc(ph || '') + '" style="font-family:var(--mono)"></label>';
+    return '<div class="panel"><div class="panel-head"><h2>' + icon('users') + 'Cuentas de clientes</h2><button type="button" class="btn ghost sm" data-a="users-test">' + icon('activity') + 'Probar</button></div>' +
+      '<p class="help">Los clientes entran con su cuenta de X-Flow Center. <b>Automático</b> valida con tu <span class="mono">login.php</span> (igual que la app) y, si no responde, con la tabla de usuarios. La tabla también se usa para <b>recuperar la contraseña</b>: la nueva clave se guarda en el mismo formato que ya usa tu Center.</p>' +
+      '<div class="fgrid"><label class="field"><span>Validar con</span><select name="users.source">' + [['auto', 'Automático (login.php y si no la BD)'], ['api', 'Solo login.php'], ['db', 'Solo tabla de usuarios']].map((o) => '<option value="' + o[0] + '"' + (u.source === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' +
+      inp('Tabla de usuarios', 'table', 'usuarios') + inp('Columna correo', 'col_email', 'email') + inp('Columna contraseña', 'col_password', 'password') + inp('Columna nombre artístico', 'col_aka', 'aka') + inp('Columna rol', 'col_role', 'rol') + inp('Columna foto', 'col_photo', 'foto_url') +
+      '<label class="field"><span>Formato de contraseña</span><select name="users.password_format">' + [['auto', 'Automático (el que ya use cada cuenta)'], ['bcrypt', 'password_hash (bcrypt)'], ['md5', 'MD5'], ['sha1', 'SHA1'], ['sha256', 'SHA256'], ['plain', 'Texto plano']].map((o) => '<option value="' + o[0] + '"' + ((u.password_format || 'auto') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>' +
+      '<label class="field"><span>Correo para probar (opcional)</span><input id="users-test-email" type="email" placeholder="tu@correo.com"></label></div></div>';
+  }
   function saveCenter() {
     const f = $('#center-form');
-    const v = (n) => (f.elements[n] ? f.elements[n].value.trim() : '');
-    const db = {};
-    ['table', 'col_email', 'col_product', 'col_product_name', 'expiry_mode', 'col_expiry', 'lifetime_value', 'col_status', 'status_active', 'status_lifetime', 'col_tier', 'col_created'].forEach((k) => { db[k] = v('db.' + k); });
-    return XF.api('admin_settings_save', { section: 'center', value: { mode: f.mode.value, db, http: { url: v('http.url'), secret: f.elements['http.secret'].value } } });
+    const v = (n) => (f.elements[n] ? String(f.elements[n].value).trim() : '');
+    const pick = (group, keys) => { const o = {}; keys.forEach((k) => { o[k] = v(group + '.' + k); }); return o; };
+    const db = pick('db', ['table', 'col_email', 'col_product', 'col_product_name', 'expiry_mode', 'col_expiry', 'lifetime_value', 'col_status', 'status_active', 'status_lifetime', 'col_tier', 'col_created']);
+    const catalog = pick('catalog', ['source', 'table', 'col_id', 'col_name', 'col_price', 'col_price_sub', 'col_desc', 'col_image', 'col_version', 'col_active', 'remote_plans_url']);
+    catalog.sub_days = Number(v('catalog.sub_days')) || 30;
+    catalog.auto_publish = !!(f.elements['catalog.auto_publish'] && f.elements['catalog.auto_publish'].checked);
+    const users = pick('users', ['source', 'table', 'col_email', 'col_password', 'col_aka', 'col_role', 'col_photo', 'password_format']);
+    return XF.api('admin_settings_save', { section: 'center', value: { mode: f.mode.value, db, http: { url: v('http.url'), secret: f.elements['http.secret'].value }, catalog, users } });
   }
 
   /* ------------------------------------------------------------ apariencia */
@@ -583,11 +618,30 @@
           go();
           break;
         }
-        case 'import-center': {
+        case 'center-sync': {
           t.classList.add('is-busy');
-          const r = await XF.api('admin_import_center_plugins', {});
-          XF.toast(r.created ? r.created + ' plugin(s) importado(s) como borrador. Revísalos y publícalos.' : 'No hay plugins nuevos en el Center.', 'success');
+          if ($('#center-form')) await saveCenter();
+          const r = (await XF.api('admin_center_sync', {})).result;
+          if (r.error) XF.toast('No se pudo leer el catálogo: ' + r.error, 'error');
+          else XF.toast(r.found + ' plugins en el Center · ' + r.created + ' nuevos · ' + r.updated + ' actualizados.', 'success');
+          t.classList.remove('is-busy');
+          if (A.section === 'productos') go();
+          break;
+        }
+        case 'legacy-import': {
+          t.classList.add('is-busy');
+          const r = (await XF.api('admin_import_legacy', {})).result;
+          XF.toast('Web anterior: ' + r.plugins_updated + ' plugins con descuentos/etiquetas, ' + r.packs_created + ' packs y ' + r.reviews + ' reseñas.', 'success');
+          t.classList.remove('is-busy');
           go();
+          break;
+        }
+        case 'users-test': {
+          t.classList.add('is-busy');
+          await saveCenter();
+          const r = (await XF.api('admin_users_test', { email: ($('#users-test-email') || {}).value || '' })).result;
+          XF.toast(r.message, r.ok ? 'success' : 'error');
+          t.classList.remove('is-busy');
           break;
         }
         case 'order': {
@@ -644,11 +698,16 @@
           t.classList.add('is-busy');
           const r = await XF.api('admin_center_describe');
           const own = r.tables.filter((tb) => !/^store_/.test(tb.table));
-          $('#tables').innerHTML = own.length ? own.map((tb) => '<details><summary>' + esc(tb.table) + ' <span class="dim">(' + tb.columns.length + ' columnas)</span></summary><div class="cols-chips">' + tb.columns.map((cl) => '<span title="' + esc(cl.type) + '">' + esc(cl.name) + '</span>').join('') + '</div><button type="button" class="btn ghost sm" style="margin-top:10px" data-a="use-table" data-t="' + esc(tb.table) + '">Usar esta tabla</button></details>').join('') : '<p class="muted">No se encontraron tablas del Center en esta base de datos.</p>';
+          $('#tables').innerHTML = own.length ? own.map((tb) => '<details><summary>' + esc(tb.table) + ' <span class="dim">(' + tb.columns.length + ' columnas)</span></summary><div class="cols-chips">' + tb.columns.map((cl) => '<span title="' + esc(cl.type) + '">' + esc(cl.name) + '</span>').join('') + '</div><div class="bar-actions" style="margin-top:10px"><button type="button" class="btn ghost sm" data-a="use-table" data-target="db" data-t="' + esc(tb.table) + '">Licencias</button><button type="button" class="btn ghost sm" data-a="use-table" data-target="catalog" data-t="' + esc(tb.table) + '">Plugins</button><button type="button" class="btn ghost sm" data-a="use-table" data-target="users" data-t="' + esc(tb.table) + '">Usuarios</button></div></details>').join('') : '<p class="muted">No se encontraron tablas del Center en esta base de datos.</p>';
           t.classList.remove('is-busy');
           break;
         }
-        case 'use-table': $('#center-form').elements['db.table'].value = t.dataset.t; XF.toast('Tabla seleccionada. Ajusta las columnas y guarda.', 'info'); break;
+        case 'use-table': {
+          const target = t.dataset.target || 'db';
+          $('#center-form').elements[target + '.table'].value = t.dataset.t;
+          XF.toast('Tabla asignada. Revisa las columnas y guarda.', 'info');
+          break;
+        }
         case 'center-test': {
           t.classList.add('is-busy');
           await saveCenter();
